@@ -4,11 +4,13 @@ use nbformat::{
     self,
     v4::{Cell, CellMetadata, Metadata},
 };
+use once_cell::sync::Lazy;
 use owo_colors::OwoColorize;
+use regex::Regex;
+use std::fmt::Write as _;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::fmt::Write as _;
 use tempfile::NamedTempFile;
 
 pub fn init(printer: &Printer, path: Option<&Path>, python: Option<&str>) -> Result<()> {
@@ -40,6 +42,83 @@ pub fn init(printer: &Printer, path: Option<&Path>, python: Option<&str>) -> Res
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn add(
+    printer: &Printer,
+    path: &Path,
+    packages: &[String],
+    requirements: Option<&Path>,
+    extras: &[String],
+    tag: Option<&str>,
+    branch: Option<&str>,
+    rev: Option<&str>,
+    editable: bool,
+) -> Result<()> {
+    let mut nb = Notebook::from_path(path)?;
+
+    for cell in nb.as_mut().cells.iter_mut() {
+        match cell {
+            Cell::Code { source, .. } if PEP723_REGEX.is_match(&source.join("")) => {
+                let temp_file = tempfile::Builder::new()
+                    .suffix(".py")
+                    .tempfile_in(path.parent().unwrap())?;
+
+                std::fs::write(temp_file.path(), source.join("").trim())?;
+
+                let mut command = Command::new("uv");
+                command.arg("add").arg("--script").arg(temp_file.path());
+
+                if editable {
+                    command.arg("--editable");
+                }
+
+                if let Some(requirements) = requirements {
+                    command.arg("--requirements").arg(requirements);
+                }
+
+                if let Some(tag) = tag {
+                    command.arg("--tag").arg(tag);
+                }
+
+                if let Some(branch) = branch {
+                    command.arg("--branch").arg(branch);
+                }
+
+                if let Some(rev) = rev {
+                    command.arg("--rev").arg(rev);
+                }
+
+                for extra in extras {
+                    command.arg("--extra").arg(extra);
+                }
+
+                command.args(packages);
+
+                let output = command.output()?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!("uv command failed: {}", stderr);
+                }
+
+                let contents = std::fs::read_to_string(temp_file.path())?;
+                *source = contents
+                    .trim()
+                    .split_inclusive('\n')
+                    .map(|s| s.to_string())
+                    .collect();
+
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    std::fs::write(path, serde_json::to_string_pretty(nb.as_ref())?)?;
+    writeln!(printer.stderr(), "Updated `{}`", path.display().cyan())?;
+    Ok(())
+}
+
 pub fn edit(printer: &Printer, file: &Path, editor: Option<&str>) -> Result<()> {
     let nb = Notebook::from_path(file)?;
     let mut temp_file = tempfile::Builder::new().suffix(".md").tempfile()?;
@@ -50,9 +129,7 @@ pub fn edit(printer: &Printer, file: &Path, editor: Option<&str>) -> Result<()> 
     }
 
     let status = match editor {
-        Some(editor) => {
-            Command::new(editor).arg(temp_file.path()).status()?
-        }
+        Some(editor) => Command::new(editor).arg(temp_file.path()).status()?,
         None => {
             writeln!(
                 printer.stderr(),
@@ -319,6 +396,12 @@ impl AsRef<nbformat::v4::Notebook> for Notebook {
     }
 }
 
+impl AsMut<nbformat::v4::Notebook> for Notebook {
+    fn as_mut(&mut self) -> &mut nbformat::v4::Notebook {
+        &mut self.0
+    }
+}
+
 impl Notebook {
     fn from_path(path: &Path) -> Result<Self> {
         let json = std::fs::read_to_string(path)?;
@@ -414,3 +497,7 @@ impl NotebookBuilder {
         Notebook(self.nb)
     }
 }
+
+static PEP723_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$").unwrap()
+});

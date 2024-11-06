@@ -66,7 +66,30 @@ enum Commands {
     /// Execute a notebook as a script
     Exec,
     /// Add dependencies to a notebook
-    Add,
+    Add {
+        /// The notebook to add dependencies to
+        path: std::path::PathBuf,
+        /// The packages to add
+        packages: Vec<String>,
+        /// Add all packages listed in the given `requirements.txt` file
+        #[arg(short, long)]
+        requirements: Option<std::path::PathBuf>,
+        /// Extras to enable for the dependency
+        #[arg(long)]
+        extra: Vec<String>,
+        /// Add the requirements as editable
+        #[arg(long)]
+        tag: Option<String>,
+        /// Tag to use when adding a dependency from Git
+        #[arg(long)]
+        branch: Option<String>,
+        /// Branch to use when adding a dependency from Git
+        #[arg(long)]
+        rev: Option<String>,
+        /// Commit to use when adding a dependency from Git
+        #[arg(long)]
+        editable: bool,
+    },
     /// Clear notebook cell outputs
     ///
     /// Supports multiple files and glob patterns (e.g., *.ipynb, notebooks/*.ipynb)
@@ -89,7 +112,7 @@ enum Commands {
         /// The editor to use
         #[arg(short, long, env = "EDITOR")]
         editor: Option<String>,
-    }
+    },
 }
 
 fn main() -> Result<()> {
@@ -123,6 +146,26 @@ fn main() -> Result<()> {
         } => commands::cat(&printer, &file, script, pager.as_deref()),
         Commands::Clear { files, check } => commands::clear(&printer, &files, check),
         Commands::Edit { file, editor } => commands::edit(&printer, &file, editor.as_deref()),
+        Commands::Add {
+            path,
+            packages,
+            requirements,
+            extra,
+            tag,
+            branch,
+            rev,
+            editable,
+        } => commands::add(
+            &printer,
+            &path,
+            &packages,
+            requirements.as_deref(),
+            &extra,
+            tag.as_deref(),
+            branch.as_deref(),
+            rev.as_deref(),
+            editable,
+        ),
         _ => unimplemented!(),
     }
 }
