@@ -2,7 +2,7 @@ use crate::printer::Printer;
 use anyhow::{bail, Result};
 use nbformat::{
     self,
-    v4::{Cell, CellMetadata, Metadata, Notebook},
+    v4::{Cell, CellMetadata, Metadata},
 };
 use owo_colors::OwoColorize;
 use std::fmt::Write as _;
@@ -30,7 +30,7 @@ pub fn init(printer: &Printer, path: Option<&Path>, python: Option<&str>) -> Res
     }
 
     let nb = new_notebook_with_inline_metadata(dir, python)?;
-    std::fs::write(&path, serde_json::to_string_pretty(&nb)?)?;
+    std::fs::write(&path, serde_json::to_string_pretty(nb.as_ref())?)?;
 
     writeln!(
         printer.stdout(),
@@ -40,18 +40,85 @@ pub fn init(printer: &Printer, path: Option<&Path>, python: Option<&str>) -> Res
     Ok(())
 }
 
+pub fn clear(printer: &Printer, targets: &[String], check: bool) -> Result<()> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+
+    // Collect notebook paths from the specified targets
+    for target in targets {
+        let path = Path::new(target);
+        if path.is_dir() {
+            // Use glob to find .ipynb files in directory
+            glob::glob(&format!("{}/*.ipynb", path.display()))?.for_each(|entry| {
+                if let Ok(notebook_path) = entry {
+                    paths.push(notebook_path);
+                }
+            });
+        } else if path.is_file() && path.extension().map_or(false, |ext| ext == "ipynb") {
+            paths.push(path.to_path_buf());
+        } else {
+            writeln!(
+                printer.stderr(),
+                "{}: Skipping `{}` because it is not a notebook",
+                "warning".yellow().bold(),
+                path.display().cyan(),
+            )?;
+        }
+    }
+
+    if check {
+        let mut any_not_cleared = false;
+
+        // Check each notebook to see if it is already cleared
+        for path in &paths {
+            let notebook = Notebook::from_path(path)?;
+            if !notebook.is_cleared() {
+                writeln!(printer.stderr(), "{}", path.display().magenta())?;
+                any_not_cleared = true;
+            }
+        }
+
+        if any_not_cleared {
+            writeln!(
+                printer.stderr(),
+                "{}: Some notebooks are not cleared. Use {} to fix.",
+                "error".red(),
+                "juv clear".yellow().bold(),
+            )?;
+            std::process::exit(1);
+        } else {
+            writeln!(printer.stderr(), "All notebooks are cleared")?;
+        }
+    } else {
+        // Clear the outputs in each notebook
+        for path in &paths {
+            let mut notebook = Notebook::from_path(path)?;
+            notebook.clear_cells()?;
+            std::fs::write(path, serde_json::to_string_pretty(&notebook.0)?)?;
+            writeln!(
+                printer.stderr(),
+                "Cleared output from `{}`",
+                path.display().cyan()
+            )?;
+        }
+        if paths.len() > 1 {
+            writeln!(
+                printer.stderr(),
+                "Cleared output from {} notebooks",
+                paths.len().to_string().cyan().bold()
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn cat(
     _printer: &Printer,
     file: &std::path::Path,
     script: bool,
     pager: Option<&str>,
 ) -> Result<()> {
-    let json = std::fs::read_to_string(file)?;
-    let nb = match nbformat::parse_notebook(&json)? {
-        nbformat::Notebook::V4(nb) => nb,
-        nbformat::Notebook::Legacy(legacy_nb) => nbformat::upgrade_legacy_notebook(legacy_nb)?,
-    };
-
+    let nb = Notebook::from_path(file)?;
     let mut writer: Box<dyn Write> = match pager.map(str::trim) {
         Some("") | None => Box::new(BufWriter::new(io::stdout().lock())),
         Some(pager) => {
@@ -78,9 +145,9 @@ pub fn cat(
     };
 
     if script {
-        write_script(&mut writer, &nb)?;
+        write_script(&mut writer, nb.as_ref())?;
     } else {
-        write_markdown(&mut writer, &nb)?;
+        write_markdown(&mut writer, nb.as_ref())?;
     };
 
     writer.flush()?;
@@ -195,10 +262,86 @@ fn new_notebook_with_inline_metadata(directory: &Path, python: Option<&str>) -> 
         anyhow::bail!("uv command failed: {}", stderr);
     }
 
-    let script = std::fs::read_to_string(temp_path)?;
+    Ok(NotebookBuilder::new()
+        .code_cell(&std::fs::read_to_string(temp_path)?)
+        .code_cell("")
+        .build())
+}
 
-    fn nbcell(source: &str) -> Cell {
-        Cell::Code {
+struct Notebook(nbformat::v4::Notebook);
+
+impl AsRef<nbformat::v4::Notebook> for Notebook {
+    fn as_ref(&self) -> &nbformat::v4::Notebook {
+        &self.0
+    }
+}
+
+impl Notebook {
+    fn from_path(path: &Path) -> Result<Self> {
+        let json = std::fs::read_to_string(path)?;
+        Ok(Self(match nbformat::parse_notebook(&json)? {
+            nbformat::Notebook::V4(nb) => nb,
+            nbformat::Notebook::Legacy(legacy_nb) => nbformat::upgrade_legacy_notebook(legacy_nb)?,
+        }))
+    }
+
+    // Whether the notebook outputs are cleared
+    fn is_cleared(&self) -> bool {
+        for cell in &self.as_ref().cells {
+            if let Cell::Code {
+                execution_count,
+                outputs,
+                ..
+            } = cell
+            {
+                if execution_count.is_some() || !outputs.is_empty() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn clear_cells(&mut self) -> Result<()> {
+        for cell in &mut self.0.cells {
+            if let Cell::Code {
+                execution_count,
+                outputs,
+                ..
+            } = cell
+            {
+                *execution_count = None;
+                outputs.clear();
+            }
+        }
+        Ok(())
+    }
+}
+
+struct NotebookBuilder {
+    nb: nbformat::v4::Notebook,
+}
+
+impl NotebookBuilder {
+    fn new() -> Self {
+        Self {
+            nb: nbformat::v4::Notebook {
+                nbformat: 4,
+                nbformat_minor: 4,
+                metadata: Metadata {
+                    kernelspec: None,
+                    language_info: None,
+                    authors: None,
+                    additional: Default::default(),
+                },
+                cells: vec![],
+            },
+        }
+    }
+
+    fn code_cell(mut self, source: &str) -> Self {
+        // TODO: Could have our own builder for this as well
+        let cell = Cell::Code {
             id: uuid::Uuid::new_v4().into(),
             metadata: CellMetadata {
                 id: None,
@@ -219,18 +362,12 @@ fn new_notebook_with_inline_metadata(directory: &Path, python: Option<&str>) -> 
                 .map(|s| s.to_string())
                 .collect(),
             outputs: vec![],
-        }
+        };
+        self.nb.cells.push(cell);
+        self
     }
 
-    Ok(Notebook {
-        nbformat: 4,
-        nbformat_minor: 4,
-        metadata: Metadata {
-            kernelspec: None,
-            language_info: None,
-            authors: None,
-            additional: Default::default(),
-        },
-        cells: vec![nbcell(&script), nbcell("")],
-    })
+    fn build(self) -> Notebook {
+        Notebook(self.nb)
+    }
 }

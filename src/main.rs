@@ -9,10 +9,10 @@ mod printer;
 
 // Configures Clap v3-style help menu colors
 const STYLES: Styles = Styles::styled()
-    .header(AnsiColor::Green.on_default().effects(Effects::BOLD))
-    .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
-    .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
-    .placeholder(AnsiColor::Cyan.on_default());
+    .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
+    .usage(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
+    .literal(AnsiColor::White.on_default().effects(Effects::BOLD))
+    .placeholder(AnsiColor::White.on_default());
 
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -68,12 +68,22 @@ enum Commands {
     /// Add dependencies to a notebook
     Add,
     /// Clear notebook cell outputs
-    Clear,
+    ///
+    /// Supports multiple files and glob patterns (e.g., *.ipynb, notebooks/*.ipynb)
+    Clear {
+        /// The files to clear, can be a glob pattern
+        files: Vec<String>,
+        /// Check if the notebooks are cleared
+        #[arg(long)]
+        check: bool,
+    },
     /// Display juv's version
     Version {
         #[arg(long, default_value = "text", value_enum)]
         output_format: VersionOutputFormat,
     },
+    /// Quick edit a notebook as markdown
+    Edit,
 }
 
 fn main() -> Result<()> {
@@ -105,6 +115,7 @@ fn main() -> Result<()> {
             script,
             pager,
         } => commands::cat(&printer, &file, script, pager.as_deref()),
+        Commands::Clear { files, check } => commands::clear(&printer, &files, check),
         _ => unimplemented!(),
     }
 }
