@@ -1,5 +1,7 @@
 use crate::printer::Printer;
+use crate::run_template::Runtime;
 use anyhow::{bail, Result};
+use clap::ValueEnum;
 use nbformat::{
     self,
     v4::{Cell, CellMetadata, Metadata},
@@ -12,6 +14,88 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::NamedTempFile;
+
+#[derive(ValueEnum, Debug, Clone, PartialEq)]
+#[clap(rename_all = "kebab_case")]
+pub(crate) enum RunMode {
+    Managed,
+    Replace,
+    Dry,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    printer: &Printer,
+    path: &Path,
+    with: &[String],
+    python: Option<&str>,
+    jupyter: Option<&str>,
+    jupyter_args: &[String],
+    mode: RunMode,
+    no_project: bool,
+) -> Result<()> {
+    let runtime: Runtime = jupyter.unwrap_or("lab").parse()?;
+    let notebook = Notebook::from_path(path)?;
+
+    let meta = notebook.as_ref().cells.iter().find_map(|cell| {
+        if let Cell::Code { source, .. } = cell {
+            PEP723_REGEX
+                .captures(&source.join(""))
+                .and_then(|cap| cap.get(0).map(|m| m.as_str().to_string()))
+        } else {
+            None
+        }
+    });
+
+    // TODO: Support managed version
+    let is_managed = false;
+    let script = runtime.run_script(path, meta.as_deref(), is_managed, jupyter_args);
+
+    let mut command = Command::new("uv");
+    command.stdout(Stdio::inherit());
+    command.stderr(Stdio::inherit());
+    command
+        .arg("run")
+        .arg("--with")
+        .arg(runtime.as_dependency_specifier())
+        .arg("-");
+    if no_project {
+        command.arg("--no-project");
+    }
+    if let Some(python) = python {
+        command.arg("--python").arg(python);
+    }
+    for with_item in with {
+        command.arg("--with").arg(with_item);
+    }
+
+    if mode == RunMode::Dry {
+        let args: Vec<_> = command
+            .get_args()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
+        println!("uv {}", args.join(" "));
+        return Ok(());
+    }
+
+    command.stdin(Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+    stdin.write_all(script.as_bytes())?;
+
+    let status = child.wait()?;
+    if !status.success() {
+        writeln!(
+            printer.stderr(),
+            "{}: uv command failed with exit code {}",
+            "error".red().bold(),
+            status.code().unwrap_or(-1)
+        )?;
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
 
 pub fn init(printer: &Printer, path: Option<&Path>, python: Option<&str>) -> Result<()> {
     let path = match path {

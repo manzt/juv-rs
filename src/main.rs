@@ -6,6 +6,7 @@ use std::io::Write as _;
 
 mod commands;
 mod printer;
+mod run_template;
 
 // Configures Clap v3-style help menu colors
 const STYLES: Styles = Styles::styled()
@@ -62,7 +63,27 @@ enum Commands {
         python: Option<String>,
     },
     /// Launch a notebook or script in a Jupyter front end
-    Run,
+    Run {
+        /// The notebook to run
+        path: std::path::PathBuf,
+        /// The runtime to use for running the notebook
+        #[arg(long, env = "JUV_JUPYTER")]
+        jupyter: Option<String>,
+        /// Run with the additional packages installed
+        #[arg(long)]
+        with: Vec<String>,
+        /// The Python interpreter to use for the run environment.
+        #[arg(short, long)]
+        python: Option<String>,
+        #[arg(long, default_value = "managed", value_enum)]
+        mode: commands::RunMode,
+        /// Additional arguments to pass to the Jupyter runtime
+        #[arg(trailing_var_arg = true)]
+        jupyter_args: Vec<String>,
+        /// Avoid discovering the project or workspace
+        #[arg(long)]
+        no_project: bool,
+    },
     /// Execute a notebook as a script
     Exec,
     /// Add dependencies to a notebook
@@ -165,6 +186,24 @@ fn main() -> Result<()> {
             branch.as_deref(),
             rev.as_deref(),
             editable,
+        ),
+        Commands::Run {
+            path,
+            jupyter,
+            with,
+            python,
+            jupyter_args,
+            mode,
+            no_project,
+        } => commands::run(
+            &printer,
+            &path,
+            &with,
+            python.as_deref(),
+            jupyter.as_deref(),
+            &jupyter_args,
+            mode,
+            no_project,
         ),
         _ => unimplemented!(),
     }
