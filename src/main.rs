@@ -6,7 +6,7 @@ use std::io::Write as _;
 
 mod commands;
 mod printer;
-mod run_template;
+mod script;
 
 // Configures Clap v3-style help menu colors
 const STYLES: Styles = Styles::styled()
@@ -14,10 +14,6 @@ const STYLES: Styles = Styles::styled()
     .usage(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
     .literal(AnsiColor::White.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::White.on_default());
-
-fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
 
 #[derive(Parser)]
 #[command(name = "juv", author, long_version = version())]
@@ -85,7 +81,16 @@ enum Commands {
         no_project: bool,
     },
     /// Execute a notebook as a script
-    Exec,
+    Exec {
+        /// The notebook to execute
+        path: std::path::PathBuf,
+        /// The Python interpreter to use for the exec environment
+        #[arg(short, long)]
+        python: Option<String>,
+        /// Run with the additional packages installed
+        #[arg(long)]
+        with: Vec<String>,
+    },
     /// Add dependencies to a notebook
     Add {
         /// The notebook to add dependencies to
@@ -205,6 +210,12 @@ fn main() -> Result<()> {
             mode,
             no_project,
         ),
-        _ => unimplemented!(),
+        Commands::Exec { path, python, with } => {
+            commands::exec(&printer, &path, python.as_deref(), &with, cli.quiet)
+        }
     }
+}
+
+fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }

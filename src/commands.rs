@@ -1,5 +1,5 @@
 use crate::printer::Printer;
-use crate::run_template::Runtime;
+use crate::script::Runtime;
 use anyhow::{bail, Result};
 use clap::ValueEnum;
 use nbformat::{
@@ -91,6 +91,58 @@ pub fn run(
             "error".red().bold(),
             status.code().unwrap_or(-1)
         )?;
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+pub fn exec(
+    _printer: &Printer,
+    path: &Path,
+    python: Option<&str>,
+    with: &[String],
+    quiet: bool,
+) -> Result<()> {
+    let path = std::path::absolute(path)?;
+    let mut args = vec!["run", "-"];
+    if quiet {
+        args.push("--quiet");
+    }
+    if let Some(python) = python {
+        args.push("--python");
+        args.push(python);
+    }
+    for with_item in with {
+        args.push("--with");
+        args.push(with_item);
+    }
+
+    let mut child = Command::new("uv")
+        .args(&args)
+        .current_dir(path.parent().unwrap())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .as_ref()
+            .map(BufWriter::new)
+            .expect("Failed to open stdin");
+        let nb = Notebook::from_path(path.as_ref())?;
+        write_script(&mut stdin, nb.as_ref())?;
+    }
+
+    let status = child.wait()?;
+    if !status.success() {
+        println!(
+            "{}: uv command failed with exit code {}",
+            "error".red().bold(),
+            status.code().unwrap_or(-1)
+        );
         std::process::exit(1);
     }
 

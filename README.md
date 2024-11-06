@@ -12,8 +12,8 @@ in progress...
 
 - [x] `cat`
 - [x] `init`
-- [ ] `run`
-- [ ] `exec`
+- [ ] `run` (only un-managed mode)
+- [x] `exec`
 - [x] `add`
 - [x] `clear`
 - [x] `version`
