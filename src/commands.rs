@@ -5,10 +5,10 @@ use nbformat::{
     v4::{Cell, CellMetadata, Metadata},
 };
 use owo_colors::OwoColorize;
-use std::fmt::Write as _;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::fmt::Write as _;
 use tempfile::NamedTempFile;
 
 pub fn init(printer: &Printer, path: Option<&Path>, python: Option<&str>) -> Result<()> {
@@ -37,6 +37,49 @@ pub fn init(printer: &Printer, path: Option<&Path>, python: Option<&str>) -> Res
         "Initialized notebook at `{}`",
         path.strip_prefix(dir)?.display().cyan()
     )?;
+    Ok(())
+}
+
+pub fn edit(printer: &Printer, file: &Path, editor: Option<&str>) -> Result<()> {
+    let nb = Notebook::from_path(file)?;
+    let mut temp_file = tempfile::Builder::new().suffix(".md").tempfile()?;
+    {
+        let mut buffer = BufWriter::new(&mut temp_file);
+        write_markdown(&mut buffer, nb.as_ref())?;
+        buffer.flush()?;
+    }
+
+    let status = match editor {
+        Some(editor) => {
+            Command::new(editor).arg(temp_file.path()).status()?
+        }
+        None => {
+            writeln!(
+                printer.stderr(),
+                "{}: No editor specified. Please set the EDITOR environment variable or use the `{}` flag.",
+                "error".red().bold(),
+                "--editor".yellow().bold()
+            )?;
+            std::process::exit(1);
+        }
+    };
+
+    if !status.success() {
+        writeln!(
+            printer.stderr(),
+            "{}: Editor command failed with exit code {}",
+            "error".red().bold(),
+            status.code().unwrap_or(-1)
+        )?;
+        std::process::exit(1);
+    }
+
+    let update = std::fs::read_to_string(temp_file.path())?;
+
+    println!("{}", update);
+
+    // TODO: Need to parse the markdown "cell" contents and update the corresponding cells
+
     Ok(())
 }
 

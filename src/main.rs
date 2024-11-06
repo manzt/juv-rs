@@ -83,7 +83,13 @@ enum Commands {
         output_format: VersionOutputFormat,
     },
     /// Quick edit a notebook as markdown
-    Edit,
+    Edit {
+        /// The file to edit
+        file: std::path::PathBuf,
+        /// The editor to use
+        #[arg(short, long, env = "EDITOR")]
+        editor: Option<String>,
+    }
 }
 
 fn main() -> Result<()> {
@@ -116,6 +122,7 @@ fn main() -> Result<()> {
             pager,
         } => commands::cat(&printer, &file, script, pager.as_deref()),
         Commands::Clear { files, check } => commands::clear(&printer, &files, check),
+        Commands::Edit { file, editor } => commands::edit(&printer, &file, editor.as_deref()),
         _ => unimplemented!(),
     }
 }
