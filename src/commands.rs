@@ -1,11 +1,8 @@
+use crate::notebook::{Notebook, NotebookBuilder};
 use crate::printer::Printer;
 use crate::script::Runtime;
 use anyhow::{bail, Result};
 use clap::ValueEnum;
-use nbformat::{
-    self,
-    v4::{Cell, CellMetadata, Metadata},
-};
 use once_cell::sync::Lazy;
 use owo_colors::OwoColorize;
 use regex::Regex;
@@ -38,7 +35,7 @@ pub fn run(
     let notebook = Notebook::from_path(path)?;
 
     let meta = notebook.as_ref().cells.iter().find_map(|cell| {
-        if let Cell::Code { source, .. } = cell {
+        if let nbformat::v4::Cell::Code { source, .. } = cell {
             PEP723_REGEX
                 .captures(&source.join(""))
                 .and_then(|cap| cap.get(0).map(|m| m.as_str().to_string()))
@@ -194,7 +191,7 @@ pub fn add(
 
     for cell in nb.as_mut().cells.iter_mut() {
         match cell {
-            Cell::Code { source, .. } if PEP723_REGEX.is_match(&source.join("")) => {
+            nbformat::v4::Cell::Code { source, .. } if PEP723_REGEX.is_match(&source.join("")) => {
                 let temp_file = tempfile::Builder::new()
                     .suffix(".py")
                     .tempfile_in(path.parent().unwrap())?;
@@ -349,7 +346,7 @@ pub fn clear(printer: &Printer, targets: &[String], check: bool) -> Result<()> {
         for path in &paths {
             let mut notebook = Notebook::from_path(path)?;
             notebook.clear_cells()?;
-            std::fs::write(path, serde_json::to_string_pretty(&notebook.0)?)?;
+            std::fs::write(path, serde_json::to_string_pretty(notebook.as_ref())?)?;
             writeln!(
                 printer.stderr(),
                 "Cleared output from `{}`",
@@ -418,20 +415,20 @@ fn write_script(writer: &mut impl Write, nb: &nbformat::v4::Notebook) -> Result<
             writer.write_all(b"\n\n")?;
         }
         match cell {
-            Cell::Code { source, .. } => {
+            nbformat::v4::Cell::Code { source, .. } => {
                 writer.write_all(b"# %%\n")?;
                 for line in source.iter() {
                     writer.write_all(line.as_bytes())?;
                 }
             }
-            Cell::Markdown { source, .. } => {
+            nbformat::v4::Cell::Markdown { source, .. } => {
                 writer.write_all(b"# %% [markdown]\n")?;
                 for line in source.iter() {
                     writer.write_all(b"# ")?;
                     writer.write_all(line.as_bytes())?;
                 }
             }
-            Cell::Raw { source, .. } => {
+            nbformat::v4::Cell::Raw { source, .. } => {
                 writer.write_all(b"# %% [raw]\n")?;
                 for line in source.iter() {
                     writer.write_all(b"# ")?;
@@ -450,19 +447,19 @@ fn write_markdown(writer: &mut impl Write, nb: &nbformat::v4::Notebook) -> Resul
             writer.write_all(b"\n\n")?;
         }
         match cell {
-            Cell::Code { source, .. } => {
+            nbformat::v4::Cell::Code { source, .. } => {
                 writer.write_all(b"```python\n")?;
                 for line in source.iter() {
                     writer.write_all(line.as_bytes())?;
                 }
                 writer.write_all(b"\n```")?;
             }
-            Cell::Markdown { source, .. } => {
+            nbformat::v4::Cell::Markdown { source, .. } => {
                 for line in source.iter() {
                     writer.write_all(line.as_bytes())?;
                 }
             }
-            Cell::Raw { source, .. } => {
+            nbformat::v4::Cell::Raw { source, .. } => {
                 writer.write_all(b"```\n")?;
                 for line in source.iter() {
                     writer.write_all(line.as_bytes())?;
@@ -522,116 +519,6 @@ fn new_notebook_with_inline_metadata(directory: &Path, python: Option<&str>) -> 
         .code_cell(&std::fs::read_to_string(temp_path)?)
         .code_cell("")
         .build())
-}
-
-struct Notebook(nbformat::v4::Notebook);
-
-impl AsRef<nbformat::v4::Notebook> for Notebook {
-    fn as_ref(&self) -> &nbformat::v4::Notebook {
-        &self.0
-    }
-}
-
-impl AsMut<nbformat::v4::Notebook> for Notebook {
-    fn as_mut(&mut self) -> &mut nbformat::v4::Notebook {
-        &mut self.0
-    }
-}
-
-impl Notebook {
-    fn from_path(path: &Path) -> Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        Ok(Self(match nbformat::parse_notebook(&json)? {
-            nbformat::Notebook::V4(nb) => nb,
-            nbformat::Notebook::Legacy(legacy_nb) => nbformat::upgrade_legacy_notebook(legacy_nb)?,
-        }))
-    }
-
-    // Whether the notebook outputs are cleared
-    fn is_cleared(&self) -> bool {
-        for cell in &self.as_ref().cells {
-            if let Cell::Code {
-                execution_count,
-                outputs,
-                ..
-            } = cell
-            {
-                if execution_count.is_some() || !outputs.is_empty() {
-                    return false;
-                }
-            }
-        }
-        true
-    }
-
-    fn clear_cells(&mut self) -> Result<()> {
-        for cell in &mut self.0.cells {
-            if let Cell::Code {
-                execution_count,
-                outputs,
-                ..
-            } = cell
-            {
-                *execution_count = None;
-                outputs.clear();
-            }
-        }
-        Ok(())
-    }
-}
-
-struct NotebookBuilder {
-    nb: nbformat::v4::Notebook,
-}
-
-impl NotebookBuilder {
-    fn new() -> Self {
-        Self {
-            nb: nbformat::v4::Notebook {
-                nbformat: 4,
-                nbformat_minor: 4,
-                metadata: Metadata {
-                    kernelspec: None,
-                    language_info: None,
-                    authors: None,
-                    additional: Default::default(),
-                },
-                cells: vec![],
-            },
-        }
-    }
-
-    fn code_cell(mut self, source: &str) -> Self {
-        // TODO: Could have our own builder for this as well
-        let cell = Cell::Code {
-            id: uuid::Uuid::new_v4().into(),
-            metadata: CellMetadata {
-                id: None,
-                collapsed: None,
-                scrolled: None,
-                deletable: None,
-                editable: None,
-                format: None,
-                jupyter: None,
-                name: None,
-                tags: None,
-                execution: None,
-            },
-            execution_count: None,
-            source: source
-                .trim()
-                .split_inclusive('\n')
-                .map(|s| s.to_string())
-                .collect(),
-            outputs: vec![],
-        };
-        self.nb.cells.push(cell);
-        self
-    }
-
-    fn build(self) -> Notebook {
-        Notebook(self.nb)
-    }
 }
 
 static PEP723_REGEX: Lazy<Regex> = Lazy::new(|| {

@@ -7,6 +7,7 @@ use std::io::Write as _;
 mod commands;
 mod printer;
 mod script;
+mod notebook;
 
 // Configures Clap v3-style help menu colors
 const STYLES: Styles = Styles::styled()
