@@ -1,4 +1,4 @@
-use std::{path::Path, str::FromStr};
+use std::{borrow::Cow, path::Path, str::FromStr};
 
 #[derive(Debug, PartialEq)]
 enum RuntimeKind {
@@ -41,143 +41,95 @@ impl FromStr for Runtime {
 }
 
 impl Runtime {
-    fn exacutable(&self) -> &str {
+    /// Provides the executable name for the runtime
+    fn exacutable(&self) -> &'static str {
         match self.kind {
             RuntimeKind::Notebook => "jupyter-notebook",
             RuntimeKind::Lab => "jupyter-lab",
             RuntimeKind::Nbclassic => "jupyter-nbclassic",
         }
     }
-    fn main_import(&self) -> &str {
+
+    /// Provides the module specifer to import the main function for the runtime
+    fn main_import(&self) -> &'static str {
         if self.kind == RuntimeKind::Notebook && self.version.as_deref() == Some("6") {
-            return "from notebook.notebookapp import main";
+            return "notebook.notebookapp";
         };
         match self.kind {
-            RuntimeKind::Notebook => "from notebook.app import main",
-            RuntimeKind::Lab => "from jupyterlab.labapp import main",
-            RuntimeKind::Nbclassic => "from nbclassic.notebookapp import main",
+            RuntimeKind::Notebook => "notebook.app",
+            RuntimeKind::Lab => "jupyterlab.labapp",
+            RuntimeKind::Nbclassic => "nbclassic.notebookapp",
         }
     }
-    fn name(&self) -> &str {
+
+    /// Provides the package name for the runtime
+    fn package_name(&self) -> &'static str {
         match self.kind {
             RuntimeKind::Notebook => "notebook",
             RuntimeKind::Lab => "jupyterlab",
             RuntimeKind::Nbclassic => "nbclassic",
         }
     }
-    pub fn run_script(
+
+    /// Provides the with args for the Runtime for uv --with=...
+    pub fn with_args(&self) -> Cow<'static, str> {
+        let specifier = if let Some(version) = &self.version {
+            Cow::Owned(format!("{}=={}", self.package_name(), version))
+        } else {
+            Cow::Borrowed(self.package_name())
+        };
+        if self.kind == RuntimeKind::Notebook && self.version.as_deref() == Some("6") {
+            // notebook v6 requires setuptools
+            format!("{},setuptools", specifier).into()
+        } else {
+            specifier
+        }
+    }
+
+    /// Dynamically generates a script for uv to run the notebook/lab/nbclassic in an isolated environment
+    pub fn prepare_run_script(
         &self,
         path: &Path,
         meta: Option<&str>,
         is_managed: bool,
         jupyter_args: &[String],
     ) -> String {
-        let notebook = path.to_string_lossy().into_owned();
-        let mut args = vec![self.exacutable().to_string(), notebook];
-        args.extend_from_slice(jupyter_args);
+        let notebook = path.to_string_lossy();
+        let mut args: Vec<&str> = vec![self.exacutable(), notebook.as_ref()];
+        args.extend(jupyter_args.iter().map(String::as_str));
+
+        let print_version: Cow<'static, str> = if is_managed {
+            format!(
+                r#"import importlib.metadata;print("JUV_MANGED=" + "{name}" + "," + importlib.metadata.version("{name}"), file=sys.stderr)"#,
+                name = self.package_name()
+            )
+            .into()
+        } else {
+            // only print version if we are in the managed mode
+            "".into()
+        };
 
         format!(
             r#"{meta}
-import os
-import sys
 
-{runtime_main_import}
+{setup_script}
 
-{SETUP_JUPYTER_DATA_DIR}
+def run():
+    import sys
+    from {main_import} import main
 
-if {is_managed}:
-    import importlib.metadata
+    setup()
+    {print_version}
+    sys.argv = {sys_argv}
+    main()
 
-    version = importlib.metadata.version("{runtime_name}")
-    print("JUV_MANGED=" + "{runtime_name}" + "," + version, file=sys.stderr)
-
-sys.argv = {sys_argv}
-main()
-"#,
+if __name__ == "__main__":
+    run()"#,
             meta = meta.unwrap_or(""),
-            runtime_main_import = self.main_import(),
-            runtime_name = self.name(),
-            is_managed = if is_managed { "True" } else { "False" },
-            SETUP_JUPYTER_DATA_DIR = SETUP_JUPYTER_DATA_DIR,
+            setup_script = include_str!("static/setup.py"),
+            main_import = self.main_import(),
+            print_version = print_version,
             sys_argv = format!("{:?}", args)
         )
     }
-
-    pub fn as_dependency_specifier(&self) -> String {
-        let name = match self {
-            Runtime {
-                kind: RuntimeKind::Notebook,
-                ..
-            } => "notebook",
-            Runtime {
-                kind: RuntimeKind::Lab,
-                ..
-            } => "jupyterlab",
-            Runtime {
-                kind: RuntimeKind::Nbclassic,
-                ..
-            } => "nbclassic",
-        };
-        let specifier = if let Some(version) = &self.version {
-            format!("{}=={}", name, version)
-        } else {
-            name.to_string()
-        };
-        if self.kind == RuntimeKind::Notebook && self.version.as_deref() == Some("6") {
-            // notebook v6 requires setuptools
-            format!("{},setuptools", specifier)
-        } else {
-            specifier
-        }
-    }
 }
-
-const SETUP_JUPYTER_DATA_DIR: &str = r#"
-import tempfile
-import signal
-from pathlib import Path
-import os
-import sys
-
-from platformdirs import user_data_dir
-
-juv_data_dir = Path(user_data_dir("juv"))
-juv_data_dir.mkdir(parents=True, exist_ok=True)
-
-temp_dir = tempfile.TemporaryDirectory(dir=juv_data_dir)
-merged_dir = Path(temp_dir.name)
-
-def handle_termination(signum, frame):
-    temp_dir.cleanup()
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, handle_termination)
-signal.signal(signal.SIGINT, handle_termination)
-
-config_paths = []
-root_data_dir = Path(sys.prefix) / "share" / "jupyter"
-jupyter_paths = [root_data_dir]
-for path in map(Path, sys.path):
-    if not path.name == "site-packages":
-        continue
-    venv_path = path.parent.parent.parent
-    config_paths.append(venv_path / "etc" / "jupyter")
-    data_dir = venv_path / "share" / "jupyter"
-    if not data_dir.exists() or str(data_dir) == str(root_data_dir):
-        continue
-
-    jupyter_paths.append(data_dir)
-
-
-for path in reversed(jupyter_paths):
-    for item in path.rglob('*'):
-        if item.is_file():
-            dest = merged_dir / item.relative_to(path)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.link(item, dest)
-            except FileExistsError:
-                pass
-
-os.environ["JUPYTER_DATA_DIR"] = str(merged_dir)
-os.environ["JUPYTER_CONFIG_PATH"] = os.pathsep.join(map(str, config_paths))"#;

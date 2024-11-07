@@ -2,7 +2,6 @@ use crate::notebook::{Notebook, NotebookBuilder};
 use crate::printer::Printer;
 use crate::script::Runtime;
 use anyhow::{bail, Result};
-use clap::ValueEnum;
 use once_cell::sync::Lazy;
 use owo_colors::OwoColorize;
 use regex::Regex;
@@ -12,14 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::NamedTempFile;
 
-#[derive(ValueEnum, Debug, Clone, PartialEq)]
-#[clap(rename_all = "kebab_case")]
-pub(crate) enum RunMode {
-    Managed,
-    Replace,
-    Dry,
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     printer: &Printer,
@@ -28,8 +19,9 @@ pub fn run(
     python: Option<&str>,
     jupyter: Option<&str>,
     jupyter_args: &[String],
-    mode: RunMode,
     no_project: bool,
+    managed: bool,
+    dry_run: bool,
 ) -> Result<()> {
     let runtime: Runtime = jupyter.unwrap_or("lab").parse()?;
     let notebook = Notebook::from_path(path)?;
@@ -45,38 +37,39 @@ pub fn run(
     });
 
     // TODO: Support managed version
-    let is_managed = false;
-    let script = runtime.run_script(path, meta.as_deref(), is_managed, jupyter_args);
+    let with_args = runtime.with_args();
+    let script = runtime.prepare_run_script(path, meta.as_deref(), managed, jupyter_args);
 
-    let mut command = Command::new("uv");
-    command.stdout(Stdio::inherit());
-    command.stderr(Stdio::inherit());
-    command
-        .arg("run")
-        .arg("--with")
-        .arg(runtime.as_dependency_specifier())
-        .arg("-");
-    if no_project {
-        command.arg("--no-project");
-    }
-    if let Some(python) = python {
-        command.arg("--python").arg(python);
-    }
-    for with_item in with {
-        command.arg("--with").arg(with_item);
-    }
+    let args = {
+        let mut args = vec!["run", "--with", with_args.as_ref()];
+        if no_project {
+            args.push("--no-project");
+        }
+        if let Some(python) = python {
+            args.push("--python");
+            args.push(python);
+        }
+        for with_item in with {
+            args.push("--with");
+            args.push(with_item);
+        }
+        args.push("-"); // stdin
+        args
+    };
 
-    if mode == RunMode::Dry {
-        let args: Vec<_> = command
-            .get_args()
-            .map(|s| s.to_string_lossy().to_string())
-            .collect();
+    if dry_run {
         println!("uv {}", args.join(" "));
+        println!("{}", script);
         return Ok(());
     }
 
-    command.stdin(Stdio::piped());
-    let mut child = command.spawn()?;
+    let mut child = Command::new("uv")
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
     let stdin = child.stdin.as_mut().expect("Failed to open stdin");
     stdin.write_all(script.as_bytes())?;
 

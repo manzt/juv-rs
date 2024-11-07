@@ -5,9 +5,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::io::Write as _;
 
 mod commands;
+mod notebook;
 mod printer;
 mod script;
-mod notebook;
 
 // Configures Clap v3-style help menu colors
 const STYLES: Styles = Styles::styled()
@@ -72,8 +72,14 @@ enum Commands {
         /// The Python interpreter to use for the run environment.
         #[arg(short, long)]
         python: Option<String>,
-        #[arg(long, default_value = "managed", value_enum)]
-        mode: commands::RunMode,
+        /// Run in juv managed mode
+        #[arg(long, action)]
+        managed: bool,
+        /// Don't actually start the Jupyter runtime.
+        ///
+        /// Prints the command that would be run and the generated "run" script.
+        #[arg(long, action)]
+        dry_run: bool,
         /// Additional arguments to pass to the Jupyter runtime
         #[arg(trailing_var_arg = true)]
         jupyter_args: Vec<String>,
@@ -199,7 +205,8 @@ fn main() -> Result<()> {
             with,
             python,
             jupyter_args,
-            mode,
+            managed,
+            dry_run,
             no_project,
         } => commands::run(
             &printer,
@@ -208,8 +215,9 @@ fn main() -> Result<()> {
             python.as_deref(),
             jupyter.as_deref(),
             &jupyter_args,
-            mode,
             no_project,
+            managed,
+            dry_run,
         ),
         Commands::Exec { path, python, with } => {
             commands::exec(&printer, &path, python.as_deref(), &with, cli.quiet)
