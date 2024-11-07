@@ -1,5 +1,5 @@
 use anyhow::Result;
-use nbformat::v4::{Cell, CellMetadata, JupyterCellMetadata, Metadata};
+use nbformat::v4::{Cell, CellId, CellMetadata, JupyterCellMetadata, Metadata};
 use std::path::Path;
 
 pub struct Notebook(nbformat::v4::Notebook);
@@ -80,9 +80,11 @@ impl NotebookBuilder {
     }
 
     fn _code_cell(mut self, source: &str, hidden: Option<bool>) -> Self {
+        let uuid = uuid::Uuid::new_v4().to_string();
         // TODO: Could have our own builder for this as well
         let cell = Cell::Code {
-            id: uuid::Uuid::new_v4().into(),
+            // ok to unwrap because we know the first part of the uuid is valid
+            id: CellId::try_from(uuid.split('-').next().unwrap()).unwrap(),
             metadata: CellMetadata {
                 id: None,
                 collapsed: None,
