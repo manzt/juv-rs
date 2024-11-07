@@ -1,5 +1,5 @@
 use anyhow::Result;
-use nbformat::v4::{Cell, CellMetadata, Metadata};
+use nbformat::v4::{Cell, CellMetadata, JupyterCellMetadata, Metadata};
 use std::path::Path;
 
 pub struct Notebook(nbformat::v4::Notebook);
@@ -79,7 +79,7 @@ impl NotebookBuilder {
         }
     }
 
-    pub fn code_cell(mut self, source: &str) -> Self {
+    fn _code_cell(mut self, source: &str, hidden: Option<bool>) -> Self {
         // TODO: Could have our own builder for this as well
         let cell = Cell::Code {
             id: uuid::Uuid::new_v4().into(),
@@ -90,7 +90,10 @@ impl NotebookBuilder {
                 deletable: None,
                 editable: None,
                 format: None,
-                jupyter: None,
+                jupyter: hidden.map(|h| JupyterCellMetadata {
+                    source_hidden: Some(h),
+                    outputs_hidden: None,
+                }),
                 name: None,
                 tags: None,
                 execution: None,
@@ -105,6 +108,14 @@ impl NotebookBuilder {
         };
         self.nb.cells.push(cell);
         self
+    }
+
+    pub fn hidden_code_cell(self, source: &str) -> Self {
+        self._code_cell(source, Some(true))
+    }
+
+    pub fn code_cell(self, source: &str) -> Self {
+        self._code_cell(source, None)
     }
 
     pub fn build(self) -> Notebook {

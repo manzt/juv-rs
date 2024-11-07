@@ -516,7 +516,7 @@ fn new_notebook_with_inline_metadata(directory: &Path, python: Option<&str>) -> 
     }
 
     Ok(NotebookBuilder::new()
-        .code_cell(&std::fs::read_to_string(temp_path)?)
+        .hidden_code_cell(&std::fs::read_to_string(temp_path)?)
         .code_cell("")
         .build())
 }
