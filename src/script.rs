@@ -87,6 +87,7 @@ impl Runtime {
     }
 
     /// Dynamically generates a script for uv to run the notebook/lab/nbclassic in an isolated environment
+    #[allow(clippy::format_in_format_args)]
     pub fn prepare_run_script(
         &self,
         path: &Path,
